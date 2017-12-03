@@ -1,0 +1,597 @@
+#!/usr/bin/python
+
+import sys
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+import pickle
+import pylab as pl
+import math
+
+
+sys.path.append("../tools/")
+
+from sklearn import linear_model
+from sklearn import cross_validation
+from sklearn import tree
+from sklearn import svm
+from sklearn.svm import SVC
+from sklearn import preprocessing
+from sklearn import grid_search
+from sklearn.cross_validation import StratifiedShuffleSplit
+
+from sklearn.cross_validation import KFold
+from sklearn.naive_bayes import GaussianNB
+from sklearn.feature_selection import SelectKBest
+from sklearn.metrics import accuracy_score
+from feature_format import featureFormat, targetFeatureSplit
+from tester import dump_classifier_and_data
+from sklearn.metrics import precision_score
+from sklearn.metrics import recall_score
+from sklearn.metrics import confusion_matrix
+from sklearn.decomposition import RandomizedPCA
+from sklearn.grid_search import GridSearchCV
+from sklearn.metrics import classification_report
+from sklearn.metrics import f1_score
+from sklearn.neighbors import NearestNeighbors
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.pipeline import Pipeline
+
+
+### Task 1: Select what features you'll use.
+### features_list is a list of strings, each of which is a feature name.
+### The first feature must be "poi".
+allfinfeatlist = ['salary', 'deferral_payments', 'total_payments', 'loan_advances', 'bonus', 'restricted_stock_deferred', 'deferred_income', 'total_stock_value', 'expenses', 'exercised_stock_options', 'other', 'long_term_incentive', 'restricted_stock', 'director_fees'] 
+
+allmailfeatlist = ['to_messages', 'email_address', 'from_poi_to_this_person', 'from_messages', 'from_this_person_to_poi', 'shared_receipt_with_poi'] 
+
+allfeatureslist = allfinfeatlist + allmailfeatlist
+
+allfeatureslist.remove('email_address')
+
+# these features seem to make most sense to correlate with being a 'high roller'/important person within the company:
+features_list = ['poi','salary', 'total_stock_value', 'bonus','expenses', 'exercised_stock_options', 'to_messages', 'from_poi_to_this_person']
+
+### Load the dictionary containing the dataset
+with open("final_project_dataset.pkl", "r") as data_file:
+    data_dict = pickle.load(data_file)
+
+## Explore the dataset some more
+# Number of participants:
+print 'Number of participants: ', len(data_dict)
+
+salarylist = []
+total_stock_valuelist = []
+NotNanssal = 0
+salarylistnonan = []
+NotNanssto = 0
+total_stock_valuelistnonan = []
+
+numberpoi = 0
+for x in data_dict:
+	# print x
+	if data_dict[x]["poi"] == 1:
+		numberpoi += 1
+
+# make seperate lists for convenience:
+	total_stock_valuelist.append(data_dict[x]['total_stock_value'])
+	salarylist.append(data_dict[x]["salary"])
+### Not needed anymore with function.
+
+# get rid of NaN's:
+	if data_dict[x]["salary"] != "NaN":
+		NotNanssal += 1
+		salarylistnonan.append(data_dict[x]["salary"])
+	if data_dict[x]["total_stock_value"] != "NaN":
+		NotNanssto += 1
+		total_stock_valuelistnonan.append(data_dict[x]['total_stock_value'])
+
+# The number of POI in the dataset
+
+print "Number of POI: ", numberpoi
+print "Perc of POI: ", float(numberpoi)/float(len(data_dict))
+# 12 percent is POI
+
+# Number of Nans in a single feature:
+print "Perc of Nans: ", (float(len(data_dict))-float(NotNanssal))/float(len(data_dict))
+# There are a lot of NaNs in salary: about 35%, make function for other vars:
+
+def checkfornans(allfeaturelist, sourcedict):
+    listofnans = []
+    # skip poi
+    totalnumber = 0
+    featurenumber = 1
+    while featurenumber < len(allfeaturelist):
+        nrofnans = 0
+        for person in sourcedict:
+            # print x
+            if sourcedict[person][str(allfeaturelist[featurenumber])] == "NaN":
+                nrofnans += 1
+        percofnans = round(float(nrofnans)/float(len(sourcedict))*100, 0)
+        totalnumber += percofnans
+        listofnans.append([allfeaturelist[featurenumber], 'total:', nrofnans, 'percentage: ', percofnans])
+        featurenumber += 1
+    return sorted(listofnans, key=lambda x: int(x[4])), 'overall perc of nans: ', percofnans/(len(allmailfeatlist)-1)
+
+# return a list of Nans for the given features:
+print '\nthe NaNs of the financial features:', checkfornans(allfinfeatlist, data_dict)
+# There sure are a lot of NaNs! Loan advances are almost 97% of NaNs. This is dangerous because the featureformat will change it into zero's, 
+# making it look like a lot of people did not get loan advances, while we actually have no information about it.
+
+print '\nthe NaNs of the mailing features:', checkfornans(allmailfeatlist, data_dict)
+# Nan's in mailing features are much lower than the financial features.
+
+print '\nthe NaNs of my features:', checkfornans(features_list, data_dict)
+
+
+# selecting function:
+def manynans(allfeaturelist, sourcedict, percofnans):
+    listofnans = []
+    # skip poi
+    featurenumber = 1
+    while featurenumber < len(allfeaturelist):
+        nrofnans = 0
+        for person in sourcedict:
+            # print x
+            if sourcedict[person][str(allfeaturelist[featurenumber])] == "NaN":
+                nrofnans += 1
+        if round(float(nrofnans)/float(len(sourcedict))*100, 0) > percofnans:
+            listofnans.append(str(allfeaturelist[featurenumber]))
+        featurenumber += 1
+    return listofnans, 'have too many NaNs'
+
+print '\n', manynans(allfeatureslist, data_dict, 70)
+# We can combine all the deferred variables to one that has less Nans (see section 4)
+
+# Maybe check if one person has all NaNs, and remove them also?
+
+
+### Task 2: Remove outliers 
+
+### Task 2a: Remove outliers from salary/total stock value
+
+# get two features from the dict of dicts and make it into lists of lists
+scatterdata = featureFormat(data_dict, ["salary", "total_stock_value"])
+
+# plotting a scatterplot
+for point in scatterdata:
+    salary = point[0]
+    total_stock_value = point[1]
+    plt.scatter( salary, total_stock_value )
+plt.xlabel("salary")
+plt.ylabel("total stock value")
+# plt.show()
+
+# This shows there is one huge outlier on both axis!
+print "maximum salary: ", max(salarylistnonan)
+
+# check keys (names)
+for name in data_dict:
+    if data_dict[name]["salary"] == max(salarylistnonan):
+        print 'name of the richest: ', name
+
+data_dict.pop("TOTAL", 0 )
+
+### 2b Are there any other outliers according to traditional criteria?:
+if max(salarylistnonan) < np.percentile(
+	salarylistnonan, 25)-(
+	np.percentile(salarylistnonan, 75)-np.percentile(salarylistnonan, 25)) or max(
+	salarylistnonan) > np.percentile(salarylistnonan, 75)+(
+	np.percentile(salarylistnonan, 75)-np.percentile(salarylistnonan, 25)):
+	print "yes, outlier"
+else:
+	print "no outlier"
+
+# check keys(names)
+for name in data_dict:
+    if data_dict[name]["salary"] == max(featureFormat(data_dict, ["salary"])):
+        print 'name of the new richest: ', name
+
+# Do we have to remove this one too? No, Skilling is a valid name.
+# Besides, there are to many outliers if we use this classical definition:
+def checkforoutlier(numberlist):
+	outliersnumbers = 0
+	for number in numberlist:
+		if number < np.percentile(
+			numberlist, 25)-(np.percentile(
+			numberlist, 75)-np.percentile(
+			numberlist, 25)) or number > np.percentile(
+			numberlist, 75)+(np.percentile(
+			numberlist, 75)-np.percentile(
+			numberlist, 25)):
+			# print "outlier: ", number
+			outliersnumbers += 1
+	return outliersnumbers, 'outliers. That is', round(float(outliersnumbers)/float(len(numberlist))*100, 0), 'percent of the total list'
+
+print checkforoutlier(salarylistnonan)
+print checkforoutlier(total_stock_valuelistnonan)
+# But maybe we can use something like this for effective outlierselection (see 2c)
+
+### 2c make an 'extreme outlierfunction' for all features:
+
+
+# This removes too many outliers, is not what we want:
+# def outlierCleaner(predictions, ages, net_worths):
+#     errors = [(net_worths[i] - predictions[i]) ** 2 for i in range(len(net_worths))]
+#     cleaned_data = sorted(zip(ages, net_worths, errors), key=lambda x:x[2])[:81]
+#     "There was", len(predictions)-len(cleaned_data), "removed"
+#     return cleaned_data
+# reg = linear_model.LinearRegression()
+# reg.fit(salary_train, net_worths_train)
+# print "r: ", reg.score(ages_test, net_worths_test)
+# print "slope: ", reg.coef_
+# print "start: ", reg.intercept_
+
+# This gives too much outliers and these data points are actually valid, plus only a few checks possible.
+
+# so need for any other outlier finding:
+def checkforoutlierlist(allfeaturelist, strictness, sourcedict):
+    listofnames = []
+    listoflist = featureFormat(data_dict, allfeaturelist)
+    # skip poi
+    featurenumber = 1
+    while featurenumber < len(allfeaturelist):
+        numberlist = []    
+        outliersnumbers = 0
+        # make different lists without the 0's:
+        for row in listoflist:
+            number = row[featurenumber]
+            if number != 0:
+                numberlist.append(number)
+        # print 'numberlist: ', numberlist
+        lowbarrier = np.percentile(
+                numberlist, strictness)-(np.percentile(
+                numberlist, 100-strictness)-np.percentile(
+                numberlist, strictness))
+        # print "low barrier: ", lowbarrier
+        highbarrier = np.percentile(
+                numberlist, 100-strictness)+(np.percentile(
+                numberlist, 100-strictness)-np.percentile(
+                numberlist, strictness))
+        for number2 in numberlist:
+            # print number2, '>', highbarrier, 'or <', lowbarrier
+            if number2 < lowbarrier or number2 > highbarrier:
+                # print "outlier: ", number2
+                outliersnumbers += 1
+                # find the name
+                for name in sourcedict:
+                    if sourcedict[name][str(features_list[featurenumber])] == number2:
+                        listofnames.append([name, features_list[featurenumber], number2/np.percentile(numberlist, 50)])
+                        # print 'name of the outlier: ', name, 'with', sourcedict[name][str(features_list[featurenumber])]
+        featurenumber += 1
+        # print 'featurenumber: ', featurenumber
+        # print round(float(outliersnumbers)/float(len(numberlist))*100, 0), 'percent of', allfeaturelist[featurenumber]
+    return listofnames 
+
+# return a list of names associated with extreme outliers for the given features:
+print checkforoutlierlist(features_list, 15, data_dict)
+# When Googling, these 'outliers' all make sense, for example:
+# The top CEO's make the most of money in diverse criteria.
+# Joseph Hirko was a co-ceo, so the stock value is very possible (no error).
+# Richard S Shapiro was a top lobbyist so it makes sense that he has more emails
+# Timoty former head of trading, so a higher bonus.
+
+# Only the total row is removed.
+
+### 2d Scaling
+
+### After we gathered descriptive data, we can scale the data:
+
+# BUT WE HAVE TO USE A PIPELINE: https://discussions.udacity.com/t/how-to-use-pipeline-for-feature-scalling/164178/2
+
+def featureScaling2(arr):
+    scaler = MinMaxScaler()
+    rescaled_weight = scaler.fit_transform(arr)
+    return rescaled_weight
+
+
+### Task 3: Create new feature(s)
+### Store to my_dataset for easy export below.
+
+# I noticed that deferred income/payments are often negative and seperately have a lot of NaN's. This makes it prone for errors.
+# We are just interested in the size of the deferred 'room to play' executives have given themselves, so we can square and add them:
+
+for name in data_dict:
+# get rid of nans:
+    for feature in allfeatureslist:
+        if data_dict[name][feature] == "NaN":
+            data_dict[name][feature] = 0
+# Make an absolute var.
+    data_dict[name]["all_poicom"] = data_dict[name]['from_poi_to_this_person'] * data_dict[name]['from_this_person_to_poi'] * data_dict[name]['shared_receipt_with_poi']
+    data_dict[name]["all_deferred"] = data_dict[name]['restricted_stock_deferred']*data_dict[name]['restricted_stock_deferred'] + data_dict[name]['deferred_income']*data_dict[name]['deferred_income'] + data_dict[name]['deferral_payments']*data_dict[name]['deferral_payments']
+# make a relative var
+# create second var which shows how big this deferred costs/income is against total salary:
+    if data_dict[name]["all_deferred"] == 0 or data_dict[name]['salary'] == 0:
+        data_dict[name]["perc_deferred"] = 0.0
+    else: 
+        data_dict[name]["perc_deferred"] = float(float(data_dict[name]["all_deferred"])/(float(data_dict[name]['salary']*data_dict[name]['salary'])))
+# make another one for mail:
+    data_dict[name]["allmail"] = data_dict[name]['from_messages']*data_dict[name]['to_messages']
+    if data_dict[name]['allmail'] == 0 or data_dict[name]['all_poicom'] == 0:
+        data_dict[name]["perc_poi"] = 0.0
+    else: 
+        data_dict[name]["perc_poi"] = float(float(data_dict[name]["all_poicom"])/float(data_dict[name]['allmail']))
+
+nrzeromail = 0
+nrzerodef = 0
+for name in data_dict:
+    # print '1', data_dict[name]['deferred_income']
+    # print '2', data_dict[name]['deferral_payments']
+    # print '3', data_dict[name]["all_deferred"]
+    if float(data_dict[name]["perc_deferred"]) == 0:
+        nrzerodef += 1
+    if float(data_dict[name]["perc_poi"]) == 0:
+        nrzeromail += 1
+print nrzerodef, float(float(nrzerodef)/float(len(data_dict)))
+print nrzeromail, float(float(nrzeromail)/float(len(data_dict)))
+# 68% and 57% is Nan, that may be too much for a good predictor
+
+my_dataset = data_dict
+
+# add this new variable to features:
+features_list.extend(['all_deferred', 'all_poicom'])
+allfeatureslist.extend(['all_deferred', 'all_poicom',"perc_deferred","perc_poi"])
+
+### Extract features and labels from dataset for local testing:
+data = featureFormat(my_dataset, features_list, sort_keys = True)
+print '+++++++++++++++', len(data), len(features_list)
+labels, features = targetFeatureSplit(data)
+
+features_train, features_test, labels_train, labels_test = cross_validation.train_test_split(features, labels, test_size=0.3, random_state=42)
+
+
+### Task 4: Try a varity of classifiers
+
+### Please name your classifier clf for easy export below.
+### Note that if you want to do PCA or other multi-stage operations,
+### you'll need to use Pipelines. For more info:
+### http://scikit-learn.org/stable/modules/pipeline.html
+
+# Provided to give you a starting point. Try a variety of classifiers.
+
+def checkmetrics(pred, labels_test, name):
+    print 'The accuracy is of a', name, 'is: ', accuracy_score(pred, labels_test)
+    # print 'if everyone had 0 score: ', float(float(len(pred))-float(numberpoi))/float(len(pred))
+    matrix = confusion_matrix(labels_test, pred)
+    print 'There are', matrix[1][1], 'POIs correctly identified. See:\n', matrix
+    print classification_report(pred, labels_test)
+    print 'precision score:', precision_score( pred, labels_test)
+    if precision_score(pred, labels_test) < recall_score(pred, labels_test):
+        print 'precision < recall, so higher chance on POIs get identified, but also more false positives'
+    if precision_score(pred, labels_test) > recall_score(pred, labels_test):
+        print 'precision > recall, so lower chance on POIs get identified, but also less false positives'
+    print 'f1 score: ', f1_score(pred, labels_test), '\n\n'
+
+print '------------------------------ Naive Bayes --------------------------------------'
+scaler = preprocessing.MinMaxScaler()
+skb = SelectKBest(k = 2)
+
+
+clf = GaussianNB()
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'naive bayes')
+
+
+clf =  Pipeline(steps=[('scaling',scaler), ("NaiveBayes", GaussianNB())])
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'naive bayes scaled')
+
+
+clf =  Pipeline(steps=[('scaling',scaler),("SKB", skb), ("NaiveBayes", GaussianNB())])
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'naive bayes scaled & clustered')
+
+
+print '------------------------------ Decision Tree ----------------------------------------'
+
+
+clf = tree.DecisionTreeClassifier()
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'decision tree')
+
+
+clf =  Pipeline(steps=[('scaling',scaler), ('decision tree', tree.DecisionTreeClassifier())])
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'decision tree scaled')
+# Hmmm scaling seems to make my f1 score better.... How can that be....
+
+
+clf =  Pipeline(steps=[('scaling',scaler),("SKB", skb), ('decision tree', tree.DecisionTreeClassifier())])
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'decision tree scaled & clustered')
+
+# Wierd... there seems to be no effect from grid:
+parameters = {'max_depth':[1,4], 'criterion': ('gini', 'entropy'), 'min_samples_split':[4, 50]}
+svr = tree.DecisionTreeClassifier()
+grid = grid_search.GridSearchCV(svr, parameters)
+clf =  Pipeline(steps=[('scaling',scaler), ("Grid", grid)])
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'Tree, with scaler & gridsearch')
+# print clf.best_params_
+
+parameters = {'max_depth':[1,4], 'criterion': ('gini', 'entropy'), 'min_samples_split':[2, 50]}
+svr = tree.DecisionTreeClassifier()
+grid = grid_search.GridSearchCV(svr, parameters)
+clf =  Pipeline(steps=[('scaling',scaler),("SKB", skb), ("Grid", grid)])
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'Tree, with scaler, clusters & gridsearch')
+# print clf.best_params_
+
+
+print '------------------------------ SVC ----------------------------------------'
+# two most interesting options are rbf and poly, the Linear one takes very long because
+# it is not suitable for a linear solution, 
+# which tells us that there probably is not going to be a simple devide:
+# clf = SVC(kernel="linear")
+# clf.fit(features_train, labels_train)
+# pred = clf.predict(features_test)
+
+# checkmetrics(pred, labels_test, 'support vector machine, linear')clf = SVC(kernel="rbf", C=10000)
+
+clf = SVC(kernel="rbf")
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'support vector machine, Radial Basis Function')
+
+
+clf = SVC(kernel="rbf", C=10000)
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'support vector machine, Radial Basis Function')
+
+
+clf =  Pipeline(steps=[('scaling',scaler), ('support vector machine', SVC(kernel="rbf"))])
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'support vector machine, Radial Basis Function scaled')
+
+
+clf =  Pipeline(steps=[('scaling',scaler),("SKB", skb), ('support vector machine', SVC(kernel="rbf"))])
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'support vector machine, Radial Basis Function scaled & clustered')
+
+# svc seems to do a terrible job.... try poly:
+
+
+clf =  Pipeline(steps=[('scaling',scaler),("SKB", skb), ('support vector machine', SVC(kernel="poly"))])
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'support vector machine, Poly, scaled & clustered')
+# still not good: try some automatic tuning:
+
+parameters = {'kernel':('poly', 'rbf'), 'C':[1, 10]}
+svr = svm.SVC()
+grid = grid_search.GridSearchCV(svr, parameters)
+clf =  Pipeline(steps=[('scaling',scaler),("SKB", skb), ("Grid", grid)])
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'support vector machine, with gridsearch')
+# print clf.best_params_
+
+
+print '------------------------------ K-means ----------------------------------------'
+
+clf = KNeighborsClassifier(n_neighbors=3)
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'K-means')
+
+
+clf =  Pipeline(steps=[('scaling',scaler), ('K-means', KNeighborsClassifier(n_neighbors=3))])
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'K-means scaled')
+
+
+clf =  Pipeline(steps=[('scaling',scaler),("SKB", skb), ('K-means', KNeighborsClassifier(n_neighbors=3))])
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'K-means scaled & clustered')
+
+parameters = {'n_neighbors':[1, 7], 'weights': ('uniform', 'distance')}
+svr = KNeighborsClassifier()
+grid = grid_search.GridSearchCV(svr, parameters)
+clf =  Pipeline(steps=[('scaling',scaler),("SKB", skb), ("Grid", grid)])
+clf.fit(features_train, labels_train)
+pred = clf.predict(features_test)
+checkmetrics(pred, labels_test, 'k-means, with gridsearch')
+
+# some descriptive data:
+numberpoi = 0
+for x in pred:
+    if x == 1:
+        numberpoi += 1
+print 'nr of people in test set', len(pred)
+print "Number of POI in testset: ", numberpoi
+
+print '------------------------------ Conclusion ----------------------------------------'
+print 'The tuned Naive Bayes and KMeans seems to have the best scores'
+
+
+### Task 5: Tune your classifier to achieve better than .3 precision and recall 
+### using our testing script. Check the tester.py script in the final project
+### folder for details on the evaluation method, especially the test_classifier
+### function. Because of the small size of the dataset, the script uses
+### stratified shuffle split cross validation. For more info: 
+### http://scikit-learn.org/stable/modules/generated/sklearn.cross_validation.StratifiedShuffleSplit.html
+
+print 'Kmeans and Naive bayes actually seem the most promising at this point. Try those:' 
+
+# Example starting point. Try investigating other evaluation techniques!
+from sklearn.cross_validation import train_test_split
+features_train2, features_test2, labels_train2, labels_test2 = \
+    train_test_split(features, labels, test_size=0.3, random_state=42)
+
+# from sklearn.cross_validation import StratifiedShuffleSplit
+# SS = StratifiedShuffleSplit(labels, n_iter = 3, test_size=0.3, random_state=30)
+# for train_indices, test_indices in SS:
+#     features_train, features_test = features[train_indices],features[test_indices]
+#     labels_train, labels_test= labels[train_indeces], labels[test_indeces]
+
+# kf = KFold(8,8)
+# for train_indices, test_indices in kf:
+#     # features_train,features_test = features[train_indices],features[test_indices]
+#     # labels_train,labels_test= labels[train_index],labels[test_index]
+#     features_train = [features[ii] for ii in train_indices]
+#     features_test = [features[ii] for ii in test_indices]
+#     labels_train = [labels[ii] for ii in train_indices]
+#     labels_test = [labels[ii] for ii in test_indices]
+
+# Try lower number of features to further increase the f1 score,
+# this seems to be the optimal combination:
+
+# features_list = ['poi','bonus', 'total_stock_value', "all_poicom"]
+
+skb = SelectKBest(k = 3)
+features_list = ['poi','bonus', 'total_stock_value', "all_poicom", 'all_deferred']
+
+parameters = {'n_neighbors':[1, 7], 'weights': ('uniform', 'distance')}
+svr = KNeighborsClassifier()
+grid = grid_search.GridSearchCV(svr, parameters)
+clf =  Pipeline(steps=[('scaling',scaler),("SKB", skb), ("Grid", grid)])
+clf.fit(features_train2, labels_train2)
+pred = clf.predict(features_test2)
+checkmetrics(pred, labels_test2, 'k-means, with gridsearch, scaled & clustered')
+
+clf =  Pipeline(steps=[('scaling',scaler),("SKB", skb), ("NaiveBayes", GaussianNB())])
+clf.fit(features_train2, labels_train2)
+pred = clf.predict(features_test2)
+checkmetrics(pred, labels_test2, 'naive bayes scaled & clustered')
+
+# naive bayes seems to be performing better...
+
+clf =  Pipeline(steps=[('scaling',scaler),("SKB", skb), ("NaiveBayes", GaussianNB())])
+clf.fit(features_train2, labels_train2)
+pred = clf.predict(features_test2)
+checkmetrics(pred, labels_test2, 'naive bayes scaled & clustered')
+
+features_selected=[features_list[i+1] for i in skb.get_support(indices=True)]
+print 'Features selected by SelectKBest:'
+print features_selected
+
+# After a lot of testing, it seems that the naive bayes, with just two features: bonus and the exercised stock options
+# performs best when scaled to a range of 0-1.
+
+### Task 6: Dump your classifier, dataset, and features_list so anyone can
+### check your results. You do not need to change anything below, but make sure
+### that the version of poi_id.py that you submit can be run on its own and
+### generates the necessary .pkl files for validating your results.
+
+dump_classifier_and_data(clf, my_dataset, features_list)
+
+
+# Sources:
+
+# https://stackoverflow.com/questions/17555218/python-how-to-sort-a-list-of-lists-by-the-fourth-element-in-each-list
+# https://discussions.udacity.com/t/gridsearchcv-and-testingtraining-data/36107/4
+# http://scikit-learn.org/stable/modules/generated/sklearn.feature_selection.SelectKBest.html
